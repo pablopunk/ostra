@@ -1212,11 +1212,15 @@ run_reverse_flow() {
   write_config
 
   echo
-  log "Checking cluster state (reverse order)"
+  if [[ "${OSTRA_FORCE:-}" == "1" ]]; then
+    log "Force mode enabled — running full bootstrap"
+  else
+    log "Checking cluster state (reverse order)"
+  fi
   echo
 
-  # Level 5: Check if Argo CD app is deployed with correct repo
-  if argo_enabled && k3s_server_ready 2>/dev/null && argocd_installed 2>/dev/null; then
+  # Level 6: Check if Argo CD app is deployed with correct repo
+  if [[ "${OSTRA_FORCE:-}" != "1" ]] && argo_enabled && k3s_server_ready 2>/dev/null && argocd_installed 2>/dev/null; then
     local current_repo
     current_repo="$(guest_ssh "$VM_IP_NODE_1" "sudo kubectl -n argocd get application ${ARGO_APP_NAME} -o jsonpath='{.spec.source.repoURL}' 2>/dev/null" 2>/dev/null || true)"
     if [[ "$current_repo" == *"${ARGO_GITHUB_REPO}"* ]]; then
@@ -1228,8 +1232,8 @@ run_reverse_flow() {
     fi
   fi
 
-  # Level 4: Check Argo CD install
-  if argo_enabled; then
+  # Level 5: Check Argo CD install
+  if [[ "${OSTRA_FORCE:-}" != "1" ]] && argo_enabled; then
     if k3s_server_ready 2>/dev/null && argocd_installed 2>/dev/null; then
       log "Argo CD already installed"
     else
@@ -1237,15 +1241,22 @@ run_reverse_flow() {
     fi
   fi
 
-  # Level 3: Check MetalLB
-  if k3s_server_ready 2>/dev/null && metallb_installed 2>/dev/null; then
+  # Level 4: Check MetalLB
+  if [[ "${OSTRA_FORCE:-}" != "1" ]] && k3s_server_ready 2>/dev/null && metallb_installed 2>/dev/null; then
     log "MetalLB already installed"
   else
     log "MetalLB not ready, continuing down..."
   fi
 
-  # Level 4: Check K3s cluster
-  if k3s_server_ready 2>/dev/null; then
+  # Level 3: Check Longhorn
+  if [[ "${OSTRA_FORCE:-}" != "1" ]] && k3s_server_ready 2>/dev/null && longhorn_installed 2>/dev/null; then
+    log "Longhorn already installed"
+  else
+    log "Longhorn not ready, continuing down..."
+  fi
+
+  # Level 2: Check K3s cluster
+  if [[ "${OSTRA_FORCE:-}" != "1" ]] && k3s_server_ready 2>/dev/null; then
     log "K3s cluster already ready"
   else
     log "K3s cluster not ready, continuing down..."
