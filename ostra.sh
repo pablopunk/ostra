@@ -74,6 +74,9 @@ VM_DISK_GB=64
 K3S_VERSION=v1.32.4+k3s1
 LONGHORN_VERSION=v1.9.1
 LONGHORN_UI_NODEPORT=30080
+METALLB_VERSION=v0.14.9
+METALLB_IP_RANGE_START=
+METALLB_IP_RANGE_END=
 ARGO_ENABLED=
 ARGO_VERSION=v2.14.11
 ARGO_UI_NODEPORT=30081
@@ -135,6 +138,9 @@ VM_DISK_GB=${VM_DISK_GB:-64}
 K3S_VERSION=${K3S_VERSION:-v1.32.4+k3s1}
 LONGHORN_VERSION=${LONGHORN_VERSION:-v1.9.1}
 LONGHORN_UI_NODEPORT=${LONGHORN_UI_NODEPORT:-30080}
+METALLB_VERSION=${METALLB_VERSION:-v0.14.9}
+METALLB_IP_RANGE_START=${METALLB_IP_RANGE_START:-}
+METALLB_IP_RANGE_END=${METALLB_IP_RANGE_END:-}
 ARGO_ENABLED=${ARGO_ENABLED:-}
 ARGO_VERSION=${ARGO_VERSION:-v2.14.11}
 ARGO_UI_NODEPORT=${ARGO_UI_NODEPORT:-30081}
@@ -667,6 +673,46 @@ wait_for_longhorn() {
   guest_ssh "$VM_IP_NODE_1" "sudo kubectl -n longhorn-system rollout status deploy/longhorn-driver-deployer --timeout=300s >/dev/null && sudo kubectl -n longhorn-system rollout status deploy/longhorn-ui --timeout=300s >/dev/null"
 }
 
+metallb_installed() {
+  guest_ssh "$VM_IP_NODE_1" "sudo kubectl get ns metallb-system >/dev/null 2>&1"
+}
+
+wait_for_metallb() {
+  guest_ssh "$VM_IP_NODE_1" "sudo kubectl -n metallb-system rollout status deploy/controller --timeout=300s >/dev/null && sudo kubectl -n metallb-system rollout status ds/speaker --timeout=300s >/dev/null"
+}
+
+ensure_metallb() {
+  if metallb_installed; then
+    log "MetalLB already installed"
+    return 0
+  fi
+
+  [[ -n "${METALLB_IP_RANGE_START:-}" ]] || die "METALLB_IP_RANGE_START not configured"
+  [[ -n "${METALLB_IP_RANGE_END:-}" ]] || die "METALLB_IP_RANGE_END not configured"
+
+  log "Installing MetalLB ${METALLB_VERSION}"
+  guest_ssh "$VM_IP_NODE_1" "sudo kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/${METALLB_VERSION}/config/manifests/metallb-native.yaml >/dev/null"
+  wait_for_metallb
+
+  log "Configuring MetalLB IP pool"
+  guest_ssh "$VM_IP_NODE_1" "cat <<'EOF' | sudo kubectl apply -f - >/dev/null
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: ostra-pool
+  namespace: metallb-system
+spec:
+  addresses:
+  - ${METALLB_IP_RANGE_START}-${METALLB_IP_RANGE_END}
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: ostra-l2
+  namespace: metallb-system
+EOF"
+}
+
 ensure_longhorn_dashboard() {
   guest_ssh "$VM_IP_NODE_1" "sudo kubectl -n longhorn-system patch svc longhorn-frontend --type merge -p '{\"spec\":{\"type\":\"NodePort\",\"ports\":[{\"port\":80,\"targetPort\":8000,\"nodePort\":${LONGHORN_UI_NODEPORT},\"protocol\":\"TCP\"}]}}' >/dev/null"
 }
@@ -1064,6 +1110,9 @@ collect_config_interactively() {
   prompt_with_default K3S_VERSION "K3s version"
   prompt_with_default LONGHORN_VERSION "Longhorn version"
   prompt_with_default LONGHORN_UI_NODEPORT "Longhorn UI node port"
+  prompt_with_default METALLB_VERSION "MetalLB version"
+  prompt_with_default METALLB_IP_RANGE_START "MetalLB IP range start (e.g., 192.168.1.240)"
+  prompt_with_default METALLB_IP_RANGE_END "MetalLB IP range end (e.g., 192.168.1.250)"
   prompt_with_default ARGO_VERSION "Argo CD version"
   prompt_with_default ARGO_UI_NODEPORT "Argo CD UI node port"
   prompt_with_default VM_NODE_1_VCPUS "Node 1 VM vCPUs"
@@ -1128,6 +1177,8 @@ Cluster defaults:
 - K3s version: ${K3S_VERSION:-v1.32.4+k3s1}
 - Longhorn version: ${LONGHORN_VERSION:-v1.9.1}
 - Longhorn UI node port: ${LONGHORN_UI_NODEPORT:-30080}
+- MetalLB version: ${METALLB_VERSION:-v0.14.9}
+- MetalLB IP range: ${METALLB_IP_RANGE_START:-unset} - ${METALLB_IP_RANGE_END:-unset}
 - Argo CD version: ${ARGO_VERSION:-v2.14.11}
 - Argo CD UI node port: ${ARGO_UI_NODEPORT:-30081}
 - Storage target node 1: ${PROXMOX_NODE_1_STORAGE:-auto}
@@ -1186,7 +1237,14 @@ run_reverse_flow() {
     fi
   fi
 
-  # Level 3: Check K3s cluster
+  # Level 3: Check MetalLB
+  if k3s_server_ready 2>/dev/null && metallb_installed 2>/dev/null; then
+    log "MetalLB already installed"
+  else
+    log "MetalLB not ready, continuing down..."
+  fi
+
+  # Level 4: Check K3s cluster
   if k3s_server_ready 2>/dev/null; then
     log "K3s cluster already ready"
   else
@@ -1235,6 +1293,10 @@ run_reverse_flow() {
 
   log "Ensuring K3s cluster is installed"
   ensure_k3s_cluster
+  echo
+
+  log "Ensuring MetalLB is installed"
+  ensure_metallb
   echo
 
   log "Ensuring Longhorn is installed"
