@@ -869,6 +869,10 @@ argocd_admin_password() {
   guest_ssh "$VM_IP_NODE_1" "sudo kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' 2>/dev/null | base64 -d" 2>/dev/null || echo "(not available yet)"
 }
 
+get_loadbalancer_ips() {
+  guest_ssh "$VM_IP_NODE_1" "sudo kubectl get svc -A -o jsonpath='{range .items[?(@.spec.type==\"LoadBalancer\")]}{.metadata.namespace}/{.metadata.name}: {.status.loadBalancer.ingress[0].ip}{\"\\n\"}{end}' 2>/dev/null" 2>/dev/null || true
+}
+
 cluster_summary() {
   echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
   echo -e "${CYAN}        OSTRA Cluster Summary${RESET}"
@@ -893,6 +897,16 @@ cluster_summary() {
     echo -e "   ${CYAN}Repo:${RESET}    ${ARGO_GITHUB_REPO}"
     echo -e "   ${CYAN}Branch:${RESET}  ${ARGO_GITHUB_BRANCH}"
     echo -e "   ${CYAN}Path:${RESET}    ${ARGO_APP_PATH}"
+  fi
+
+  local lb_ips
+  lb_ips="$(get_loadbalancer_ips)"
+  if [[ -n "$lb_ips" ]]; then
+    echo ""
+    echo -e "${YELLOW}🌐 LoadBalancer Services${RESET}"
+    echo "$lb_ips" | while read -r line; do
+      echo -e "   ${CYAN}$line${RESET}"
+    done
   fi
   echo ""
   echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
