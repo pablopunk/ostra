@@ -67,6 +67,14 @@ VM_DISK_GB=64
 K3S_VERSION=v1.32.4+k3s1
 LONGHORN_VERSION=v1.9.1
 LONGHORN_UI_NODEPORT=30080
+ARGO_ENABLED=
+ARGO_VERSION=v2.14.11
+ARGO_UI_NODEPORT=30081
+ARGO_GITHUB_REPO=
+ARGO_GITHUB_BRANCH=main
+ARGO_APP_PATH=.
+ARGO_APP_NAMESPACE=default
+ARGO_APP_NAME=homelab
 VM_NODE_1_VCPUS=4
 VM_NODE_1_RAM_MB=8192
 VM_NODE_2_VCPUS=2
@@ -120,6 +128,14 @@ VM_DISK_GB=${VM_DISK_GB:-64}
 K3S_VERSION=${K3S_VERSION:-v1.32.4+k3s1}
 LONGHORN_VERSION=${LONGHORN_VERSION:-v1.9.1}
 LONGHORN_UI_NODEPORT=${LONGHORN_UI_NODEPORT:-30080}
+ARGO_ENABLED=${ARGO_ENABLED:-}
+ARGO_VERSION=${ARGO_VERSION:-v2.14.11}
+ARGO_UI_NODEPORT=${ARGO_UI_NODEPORT:-30081}
+ARGO_GITHUB_REPO=${ARGO_GITHUB_REPO:-}
+ARGO_GITHUB_BRANCH=${ARGO_GITHUB_BRANCH:-main}
+ARGO_APP_PATH=${ARGO_APP_PATH:-.}
+ARGO_APP_NAMESPACE=${ARGO_APP_NAMESPACE:-default}
+ARGO_APP_NAME=${ARGO_APP_NAME:-homelab}
 VM_NODE_1_VCPUS=${VM_NODE_1_VCPUS:-4}
 VM_NODE_1_RAM_MB=${VM_NODE_1_RAM_MB:-8192}
 VM_NODE_2_VCPUS=${VM_NODE_2_VCPUS:-2}
@@ -664,6 +680,131 @@ ensure_longhorn() {
   ensure_longhorn_dashboard
 }
 
+normalize_github_repo_url() {
+  local repo="$1"
+  repo="${repo#https://github.com/}"
+  repo="${repo#http://github.com/}"
+  repo="${repo#git@github.com:}"
+  repo="${repo%.git}"
+  echo "$repo"
+}
+
+argo_enabled() {
+  [[ "${ARGO_ENABLED:-}" == "1" || "${ARGO_ENABLED:-}" == "true" || "${ARGO_ENABLED:-}" == "yes" ]]
+}
+
+argocd_installed() {
+  guest_ssh "$VM_IP_NODE_1" "sudo kubectl get ns argocd >/dev/null 2>&1"
+}
+
+wait_for_argocd() {
+  guest_ssh "$VM_IP_NODE_1" "sudo kubectl -n argocd rollout status deploy/argocd-server --timeout=300s >/dev/null && sudo kubectl -n argocd rollout status deploy/argocd-repo-server --timeout=300s >/dev/null && sudo kubectl -n argocd rollout status statefulset/argocd-application-controller --timeout=300s >/dev/null"
+}
+
+ensure_argocd_dashboard() {
+  guest_ssh "$VM_IP_NODE_1" "sudo kubectl -n argocd patch svc argocd-server --type merge -p '{\"spec\":{\"type\":\"NodePort\",\"ports\":[{\"name\":\"http\",\"port\":80,\"protocol\":\"TCP\",\"targetPort\":8080,\"nodePort\":${ARGO_UI_NODEPORT}}]}}' >/dev/null"
+}
+
+ensure_argocd() {
+  if argocd_installed; then
+    log "Argo CD already installed"
+    ensure_argocd_dashboard
+    return 0
+  fi
+
+  log "Installing Argo CD ${ARGO_VERSION}"
+  guest_ssh "$VM_IP_NODE_1" "sudo kubectl create namespace argocd >/dev/null 2>&1 || true && sudo kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/${ARGO_VERSION}/manifests/install.yaml >/dev/null"
+  wait_for_argocd
+  log "Configuring Argo CD for HTTP (insecure mode)"
+  guest_ssh "$VM_IP_NODE_1" "sudo kubectl patch configmap argocd-cmd-params-cm -n argocd --type merge -p '{\"data\":{\"server.insecure\":\"true\"}}' >/dev/null && sudo kubectl rollout restart deployment argocd-server -n argocd >/dev/null"
+  sleep 5
+  wait_for_argocd
+  ensure_argocd_dashboard
+}
+
+ensure_gh_auth() {
+  command -v gh >/dev/null 2>&1 || die "gh CLI is required. Install it and run gh auth login"
+  gh auth status >/dev/null 2>&1 || die "GitHub auth missing. Run: gh auth login"
+}
+
+gh_token_for_argocd() {
+  gh auth token
+}
+
+ensure_argocd_repo_secret() {
+  local repo="$1"
+  local token="$2"
+  local repo_url="https://github.com/${repo}.git"
+  guest_ssh "$VM_IP_NODE_1" "cat <<'EOF' | sudo kubectl apply -f - >/dev/null
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ostra-argocd-repo
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+stringData:
+  type: git
+  url: ${repo_url}
+  username: x-access-token
+  password: ${token}
+EOF"
+}
+
+ensure_argocd_application() {
+  local repo="$1"
+  local repo_url="https://github.com/${repo}.git"
+  guest_ssh "$VM_IP_NODE_1" "cat <<'EOF' | sudo kubectl apply -f - >/dev/null
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ${ARGO_APP_NAME}
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: ${repo_url}
+    targetRevision: ${ARGO_GITHUB_BRANCH}
+    path: ${ARGO_APP_PATH}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ${ARGO_APP_NAMESPACE}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+EOF"
+}
+
+ensure_argocd_repo_connected() {
+  local token
+  [[ -n "${ARGO_GITHUB_REPO:-}" ]] || die "Argo CD repo is enabled but no GitHub repo was provided"
+  ensure_gh_auth
+  token="$(gh_token_for_argocd)"
+  ensure_argocd_repo_secret "$ARGO_GITHUB_REPO" "$token"
+  ensure_argocd_application "$ARGO_GITHUB_REPO"
+}
+
+collect_argo_config() {
+  if prompt_yes_no "Do you want to install Argo CD and connect a GitHub repo?" "y"; then
+    ARGO_ENABLED="yes"
+    write_config
+    prompt_with_default ARGO_GITHUB_REPO "GitHub repo (owner/name or URL)"
+    ARGO_GITHUB_REPO="$(normalize_github_repo_url "${ARGO_GITHUB_REPO:-}")"
+    write_config
+    prompt_with_default ARGO_GITHUB_BRANCH "GitHub branch"
+    prompt_with_default ARGO_APP_PATH "Repo path to deploy"
+    prompt_with_default ARGO_APP_NAMESPACE "Namespace to deploy into"
+    prompt_with_default ARGO_APP_NAME "Argo CD app name"
+  else
+    ARGO_ENABLED=""
+    ARGO_GITHUB_REPO=""
+    write_config
+  fi
+}
+
 cluster_summary() {
   cat <<EOF
 OSTRA cluster summary:
@@ -673,6 +814,14 @@ OSTRA cluster summary:
 - Node 3: ${VM_NAME_NODE_3} (${VM_IP_NODE_3})
 - Longhorn UI: http://${VM_IP_NODE_1}:${LONGHORN_UI_NODEPORT}
 EOF
+  if argo_enabled; then
+    cat <<EOF
+- Argo CD UI: http://${VM_IP_NODE_1}:${ARGO_UI_NODEPORT}
+- Argo CD repo: ${ARGO_GITHUB_REPO}
+- Argo CD branch: ${ARGO_GITHUB_BRANCH}
+- Argo CD path: ${ARGO_APP_PATH}
+EOF
+  fi
   guest_ssh "$VM_IP_NODE_1" "sudo kubectl get nodes -o wide"
 }
 
@@ -841,6 +990,8 @@ validate_config() {
   local missing=0
   local idx ip_var ip_value
 
+  [[ "${ARGO_UI_NODEPORT:-30081}" =~ ^[0-9]+$ ]] || { echo "- ARGO_UI_NODEPORT must be numeric" >&2; missing=1; }
+
   for idx in 1 2 3; do
     ip_var="PROXMOX_NODE_${idx}_IP"
     ip_value="${!ip_var:-}"
@@ -884,6 +1035,8 @@ collect_config_interactively() {
   prompt_with_default K3S_VERSION "K3s version"
   prompt_with_default LONGHORN_VERSION "Longhorn version"
   prompt_with_default LONGHORN_UI_NODEPORT "Longhorn UI node port"
+  prompt_with_default ARGO_VERSION "Argo CD version"
+  prompt_with_default ARGO_UI_NODEPORT "Argo CD UI node port"
   prompt_with_default VM_NODE_1_VCPUS "Node 1 VM vCPUs"
   prompt_with_default VM_NODE_1_RAM_MB "Node 1 VM RAM (MB)"
   prompt_with_default VM_NODE_2_VCPUS "Node 2 VM vCPUs"
@@ -922,6 +1075,9 @@ ensure_config_ready() {
       write_config
       log "Saved config to $CONFIG_FILE"
     fi
+    collect_argo_config
+    derive_gateway_if_missing
+    write_config
   fi
 
   validate_config || die "Config is incomplete. Run: ./ostra.sh config"
@@ -944,6 +1100,8 @@ Cluster defaults:
 - K3s version: ${K3S_VERSION:-v1.32.4+k3s1}
 - Longhorn version: ${LONGHORN_VERSION:-v1.9.1}
 - Longhorn UI node port: ${LONGHORN_UI_NODEPORT:-30080}
+- Argo CD version: ${ARGO_VERSION:-v2.14.11}
+- Argo CD UI node port: ${ARGO_UI_NODEPORT:-30081}
 - Storage target node 1: ${PROXMOX_NODE_1_STORAGE:-auto}
 - Storage target node 2: ${PROXMOX_NODE_2_STORAGE:-auto}
 - Storage target node 3: ${PROXMOX_NODE_3_STORAGE:-auto}
@@ -1014,6 +1172,13 @@ run_default_flow() {
   log "Ensuring Longhorn is installed"
   ensure_longhorn
   echo
+
+  if argo_enabled; then
+    log "Ensuring Argo CD is installed"
+    ensure_argocd
+    ensure_argocd_repo_connected
+    echo
+  fi
 
   run_longhorn_smoke_test
   echo
