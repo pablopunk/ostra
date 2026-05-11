@@ -6,11 +6,9 @@
 
 OSTRA is a script that turns a few Proxmox nodes into a small K3s + Longhorn homelab cluster with as little manual work as possible.
 
-## Initial target
+## Features
 
-OSTRA v1 is aimed at this shape:
-
-- 3 Proxmox nodes reachable over SSH
+- 3 Proxmox nodes
 - 1 VM per Proxmox node
 - K3s cluster:
   - 1 server
@@ -22,7 +20,7 @@ OSTRA v1 is aimed at this shape:
 ## Usage vision
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/pablopunk/ostra/main/ostra.sh | bash -s -- apply
+curl -fsSL https://raw.githubusercontent.com/pablopunk/ostra/main/ostra.sh | bash -s
 ```
 
 ## Local files
