@@ -17,11 +17,12 @@ OSTRA v1 is aimed at this shape:
   - 2 agents
 - Longhorn for replicated storage
 - Ability to mark one low-power node as mostly storage-only
+- Ability to deploy a github repo and listen for changes
 
 ## Usage vision
 
 ```bash
-curl -fsSL <repo-url>/ostra.sh | bash -s -- apply
+curl -fsSL https://raw.githubusercontent.com/pablopunk/ostra/main/ostra.sh | bash -s -- apply
 ```
 
 ## Local files
