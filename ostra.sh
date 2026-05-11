@@ -925,7 +925,13 @@ cluster_summary() {
   traefik_ip="$(get_traefik_ip)"
   if [[ -n "$traefik_ip" ]]; then
     echo -e "   ${CYAN}http://${traefik_ip}${RESET} - Access all your apps here"
-    echo -e "   ${CYAN}(Use hostnames like pihole.local pointing to this IP)${RESET}"
+    echo ""
+    echo -e "   ${YELLOW}To use hostnames (recommended):${RESET}"
+    echo -e "   1. Set your DNS or /etc/hosts to point pihole.local to ${traefik_ip}"
+    echo -e "   2. Then access Pi-hole at: ${CYAN}http://pihole.local${RESET}"
+    echo ""
+    echo -e "   ${YELLOW}Or access directly by IP (quick test):${RESET}"
+    echo -e "   ${CYAN}http://${traefik_ip}${RESET} (you may need to add a Host header)"
   else
     echo -e "   ${YELLOW}(IP not assigned yet - check 'kubectl -n kube-system get svc traefik')${RESET}"
   fi
