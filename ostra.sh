@@ -597,40 +597,135 @@ ensure_k3s_token() {
   fi
 }
 
-k3s_server_ready() {
-  guest_ssh "$VM_IP_NODE_1" "sudo test -f /etc/rancher/k3s/k3s.yaml && sudo kubectl get nodes >/dev/null 2>&1"
+kube_ssh() {
+  local cmd="$*"
+  local ip
+  for ip in "$VM_IP_NODE_1" "$VM_IP_NODE_2" "$VM_IP_NODE_3"; do
+    if guest_reachable "$ip"; then
+      if guest_ssh "$ip" "sudo kubectl get nodes >/dev/null 2>&1" >/dev/null 2>&1; then
+        guest_ssh "$ip" "$cmd"
+        return 0
+      fi
+    fi
+  done
+  return 1
 }
 
-ensure_k3s_server() {
-  ensure_k3s_token
-  if k3s_server_ready; then
-    log "K3s server already installed on ${VM_NAME_NODE_1}"
-    return 0
-  fi
-
-  log "Installing K3s server on ${VM_NAME_NODE_1}"
-  guest_ssh "$VM_IP_NODE_1" "curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION='${K3S_VERSION}' K3S_TOKEN='${K3S_TOKEN}' sh -s - --write-kubeconfig-mode 644"
+k3s_server_active() {
+  local ip="$1"
+  guest_ssh "$ip" "sudo systemctl is-active k3s >/dev/null 2>&1"
 }
 
-k3s_agent_joined() {
+k3s_agent_active() {
   local ip="$1"
   guest_ssh "$ip" "sudo systemctl is-active k3s-agent >/dev/null 2>&1"
 }
 
-ensure_k3s_agent() {
-  local idx="$1"
-  local name_var="VM_NAME_NODE_${idx}"
-  local ip_var="VM_IP_NODE_${idx}"
-  local name="${!name_var}"
-  local ip="${!ip_var}"
+k3s_embedded_etcd_ready() {
+  guest_ssh "$VM_IP_NODE_1" "sudo test -d /var/lib/rancher/k3s/server/db/etcd"
+}
 
-  if k3s_agent_joined "$ip"; then
-    log "K3s agent already installed on ${name}"
+k3s_cluster_ready() {
+  kube_ssh "sudo kubectl get nodes >/dev/null 2>&1"
+}
+
+k3s_ha_ready() {
+  k3s_cluster_ready || return 1
+  k3s_embedded_etcd_ready || return 1
+  k3s_server_active "$VM_IP_NODE_1" || return 1
+  k3s_server_active "$VM_IP_NODE_2" || return 1
+  k3s_server_active "$VM_IP_NODE_3" || return 1
+}
+
+write_k3s_server_config() {
+  local ip="$1"
+  local mode="$2"
+  if [[ "$mode" == "init" ]]; then
+    guest_ssh "$ip" "sudo mkdir -p /etc/rancher/k3s && cat <<'EOF' | sudo tee /etc/rancher/k3s/config.yaml >/dev/null
+token: ${K3S_TOKEN}
+cluster-init: true
+write-kubeconfig-mode: \"644\"
+disable:
+  - servicelb
+EOF"
+  else
+    guest_ssh "$ip" "sudo mkdir -p /etc/rancher/k3s && cat <<'EOF' | sudo tee /etc/rancher/k3s/config.yaml >/dev/null
+token: ${K3S_TOKEN}
+server: https://${VM_IP_NODE_1}:6443
+write-kubeconfig-mode: \"644\"
+disable:
+  - servicelb
+EOF"
+  fi
+}
+
+k3s_server_config_ok() {
+  local ip="$1"
+  guest_ssh "$ip" "grep -q 'servicelb' /etc/rancher/k3s/config.yaml 2>/dev/null"
+}
+
+install_k3s_server_binary() {
+  local ip="$1"
+  guest_ssh "$ip" "curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION='${K3S_VERSION}' sh -s - server >/dev/null"
+}
+
+ensure_k3s_server_node() {
+  local idx="$1"
+  local role="$2"
+  local ip_var="VM_IP_NODE_${idx}"
+  local name_var="VM_NAME_NODE_${idx}"
+  local ip="${!ip_var}"
+  local name="${!name_var}"
+
+  if [[ "$idx" == "1" ]] && ! k3s_embedded_etcd_ready; then
+    log "Converting ${name} to embedded etcd control-plane"
+    write_k3s_server_config "$ip" "init"
+    guest_ssh "$ip" "sudo systemctl restart k3s"
+    sleep 10
+  fi
+
+  if k3s_server_active "$ip"; then
+    if k3s_server_config_ok "$ip"; then
+      log "K3s server already running on ${name}"
+      return 0
+    fi
+    log "Updating K3s server config on ${name}"
+    write_k3s_server_config "$ip" "$role"
+    guest_ssh "$ip" "sudo systemctl restart k3s"
+    sleep 10
     return 0
   fi
 
-  log "Installing K3s agent on ${name}"
-  guest_ssh "$ip" "curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION='${K3S_VERSION}' K3S_URL='https://${VM_IP_NODE_1}:6443' K3S_TOKEN='${K3S_TOKEN}' sh -"
+  if k3s_agent_active "$ip"; then
+    log "Promoting ${name} from agent to control-plane"
+    guest_ssh "$ip" "sudo /usr/local/bin/k3s-agent-uninstall.sh >/dev/null 2>&1 || true"
+    sleep 5
+  fi
+
+  log "Installing K3s control-plane on ${name}"
+  write_k3s_server_config "$ip" "$role"
+  install_k3s_server_binary "$ip"
+}
+
+wait_for_k3s_ha() {
+  local attempts=30
+  local i
+  for i in $(seq 1 "$attempts"); do
+    if k3s_ha_ready; then
+      return 0
+    fi
+    sleep 5
+  done
+  return 1
+}
+
+ensure_k3s_cluster() {
+  ensure_k3s_token
+  ensure_k3s_server_node 1 init
+  ensure_k3s_server_node 2 join
+  ensure_k3s_server_node 3 join
+  wait_for_k3s_ha || die "K3s HA control-plane did not become ready"
+  ensure_storage_only_taint
 }
 
 ensure_storage_only_taint() {
@@ -641,14 +736,7 @@ ensure_storage_only_taint() {
   local name_var="VM_NAME_NODE_${STORAGE_ONLY_NODE_INDEX}"
   local node_name="${!name_var}"
   log "Applying storage-only taint to ${node_name}"
-  guest_ssh "$VM_IP_NODE_1" "sudo kubectl taint node ${node_name} ostra/storage-only=true:NoSchedule --overwrite"
-}
-
-ensure_k3s_cluster() {
-  ensure_k3s_server
-  ensure_k3s_agent 2
-  ensure_k3s_agent 3
-  ensure_storage_only_taint
+  kube_ssh "sudo kubectl taint node ${node_name} ostra/storage-only=true:NoSchedule --overwrite"
 }
 
 ensure_longhorn_prereqs_on_guest() {
@@ -664,7 +752,7 @@ ensure_longhorn_prereqs() {
 }
 
 longhorn_installed() {
-  guest_ssh "$VM_IP_NODE_1" "sudo kubectl get ns longhorn-system >/dev/null 2>&1"
+  kube_ssh "sudo kubectl get ns longhorn-system >/dev/null 2>&1"
 }
 
 patch_longhorn_tolerations() {
@@ -673,25 +761,25 @@ patch_longhorn_tolerations() {
 }
 
 wait_for_longhorn() {
-  guest_ssh "$VM_IP_NODE_1" "sudo kubectl -n longhorn-system rollout status deploy/longhorn-driver-deployer --timeout=300s >/dev/null && sudo kubectl -n longhorn-system rollout status deploy/longhorn-ui --timeout=300s >/dev/null"
+  kube_ssh "sudo kubectl -n longhorn-system rollout status deploy/longhorn-driver-deployer --timeout=300s >/dev/null && sudo kubectl -n longhorn-system rollout status deploy/longhorn-ui --timeout=300s >/dev/null"
 }
 
 metallb_installed() {
-  guest_ssh "$VM_IP_NODE_1" "sudo kubectl get ns metallb-system >/dev/null 2>&1"
+  kube_ssh "sudo kubectl get ns metallb-system >/dev/null 2>&1"
 }
 
 wait_for_metallb() {
-  guest_ssh "$VM_IP_NODE_1" "sudo kubectl -n metallb-system rollout status deploy/controller --timeout=300s >/dev/null && sudo kubectl -n metallb-system rollout status ds/speaker --timeout=300s >/dev/null"
+  kube_ssh "sudo kubectl -n metallb-system rollout status deploy/controller --timeout=300s >/dev/null && sudo kubectl -n metallb-system rollout status ds/speaker --timeout=300s >/dev/null"
 }
 
 ensure_traefik_loadbalancer() {
   log "Exposing Traefik ingress controller on LoadBalancer IP"
-  guest_ssh "$VM_IP_NODE_1" "sudo kubectl patch svc traefik -n kube-system --type merge -p '{\"spec\":{\"type\":\"LoadBalancer\"}}' >/dev/null 2>&1 || true"
+  kube_ssh "sudo kubectl patch svc traefik -n kube-system --type merge -p '{\"spec\":{\"type\":\"LoadBalancer\"}}' >/dev/null 2>&1 || true"
   # Wait for Traefik to get an external IP
   local attempts=0
   while [[ $attempts -lt 30 ]]; do
     local ip
-    ip="$(guest_ssh "$VM_IP_NODE_1" "sudo kubectl -n kube-system get svc traefik -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null" 2>/dev/null || true)"
+    ip="$(kube_ssh "sudo kubectl -n kube-system get svc traefik -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null" 2>/dev/null || true)"
     if [[ -n "$ip" ]]; then
       log "Traefik ingress available at: http://${ip}"
       return 0
@@ -703,7 +791,7 @@ ensure_traefik_loadbalancer() {
 }
 
 get_traefik_ip() {
-  guest_ssh "$VM_IP_NODE_1" "sudo kubectl -n kube-system get svc traefik -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null" 2>/dev/null || echo ""
+  kube_ssh "sudo kubectl -n kube-system get svc traefik -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null" 2>/dev/null || echo ""
 }
 
 ensure_metallb() {
@@ -716,7 +804,7 @@ ensure_metallb() {
   [[ -n "${METALLB_IP_RANGE_END:-}" ]] || die "METALLB_IP_RANGE_END not configured"
 
   log "Installing MetalLB ${METALLB_VERSION}"
-  guest_ssh "$VM_IP_NODE_1" "sudo kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/${METALLB_VERSION}/config/manifests/metallb-native.yaml >/dev/null"
+  kube_ssh "sudo kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/${METALLB_VERSION}/config/manifests/metallb-native.yaml >/dev/null"
   wait_for_metallb
 
   log "Configuring MetalLB IP pool"
@@ -739,7 +827,7 @@ EOF"
 }
 
 ensure_longhorn_dashboard() {
-  guest_ssh "$VM_IP_NODE_1" "sudo kubectl -n longhorn-system patch svc longhorn-frontend --type merge -p '{\"spec\":{\"type\":\"NodePort\",\"ports\":[{\"port\":80,\"targetPort\":8000,\"nodePort\":${LONGHORN_UI_NODEPORT},\"protocol\":\"TCP\"}]}}' >/dev/null"
+  kube_ssh "sudo kubectl -n longhorn-system patch svc longhorn-frontend --type merge -p '{\"spec\":{\"type\":\"NodePort\",\"ports\":[{\"port\":80,\"targetPort\":8000,\"nodePort\":${LONGHORN_UI_NODEPORT},\"protocol\":\"TCP\"}]}}' >/dev/null"
 }
 
 ensure_longhorn() {
@@ -752,7 +840,7 @@ ensure_longhorn() {
   fi
 
   log "Installing Longhorn ${LONGHORN_VERSION}"
-  guest_ssh "$VM_IP_NODE_1" "sudo kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/${LONGHORN_VERSION}/deploy/longhorn.yaml >/dev/null"
+  kube_ssh "sudo kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/${LONGHORN_VERSION}/deploy/longhorn.yaml >/dev/null"
   patch_longhorn_tolerations
   wait_for_longhorn
   ensure_longhorn_dashboard
@@ -772,15 +860,15 @@ argo_enabled() {
 }
 
 argocd_installed() {
-  guest_ssh "$VM_IP_NODE_1" "sudo kubectl get ns argocd >/dev/null 2>&1"
+  kube_ssh "sudo kubectl get ns argocd >/dev/null 2>&1"
 }
 
 wait_for_argocd() {
-  guest_ssh "$VM_IP_NODE_1" "sudo kubectl -n argocd rollout status deploy/argocd-server --timeout=300s >/dev/null && sudo kubectl -n argocd rollout status deploy/argocd-repo-server --timeout=300s >/dev/null && sudo kubectl -n argocd rollout status statefulset/argocd-application-controller --timeout=300s >/dev/null"
+  kube_ssh "sudo kubectl -n argocd rollout status deploy/argocd-server --timeout=300s >/dev/null && sudo kubectl -n argocd rollout status deploy/argocd-repo-server --timeout=300s >/dev/null && sudo kubectl -n argocd rollout status statefulset/argocd-application-controller --timeout=300s >/dev/null"
 }
 
 ensure_argocd_dashboard() {
-  guest_ssh "$VM_IP_NODE_1" "sudo kubectl -n argocd patch svc argocd-server --type merge -p '{\"spec\":{\"type\":\"NodePort\",\"ports\":[{\"name\":\"http\",\"port\":80,\"protocol\":\"TCP\",\"targetPort\":8080,\"nodePort\":${ARGO_UI_NODEPORT}}]}}' >/dev/null"
+  kube_ssh "sudo kubectl -n argocd patch svc argocd-server --type merge -p '{\"spec\":{\"type\":\"NodePort\",\"ports\":[{\"name\":\"http\",\"port\":80,\"protocol\":\"TCP\",\"targetPort\":8080,\"nodePort\":${ARGO_UI_NODEPORT}}]}}' >/dev/null"
 }
 
 ensure_argocd() {
@@ -791,10 +879,10 @@ ensure_argocd() {
   fi
 
   log "Installing Argo CD ${ARGO_VERSION}"
-  guest_ssh "$VM_IP_NODE_1" "sudo kubectl create namespace argocd >/dev/null 2>&1 || true && sudo kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/${ARGO_VERSION}/manifests/install.yaml >/dev/null"
+  kube_ssh "sudo kubectl create namespace argocd >/dev/null 2>&1 || true && sudo kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/${ARGO_VERSION}/manifests/install.yaml >/dev/null"
   wait_for_argocd
   log "Configuring Argo CD for HTTP (insecure mode)"
-  guest_ssh "$VM_IP_NODE_1" "sudo kubectl patch configmap argocd-cmd-params-cm -n argocd --type merge -p '{\"data\":{\"server.insecure\":\"true\"}}' >/dev/null && sudo kubectl rollout restart deployment argocd-server -n argocd >/dev/null"
+  kube_ssh "sudo kubectl patch configmap argocd-cmd-params-cm -n argocd --type merge -p '{\"data\":{\"server.insecure\":\"true\"}}' >/dev/null && sudo kubectl rollout restart deployment argocd-server -n argocd >/dev/null"
   sleep 5
   wait_for_argocd
   ensure_argocd_dashboard
@@ -903,11 +991,11 @@ collect_argo_config() {
 }
 
 argocd_admin_password() {
-  guest_ssh "$VM_IP_NODE_1" "sudo kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' 2>/dev/null | base64 -d" 2>/dev/null || echo "(not available yet)"
+  kube_ssh "sudo kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' 2>/dev/null | base64 -d" 2>/dev/null || echo "(not available yet)"
 }
 
 get_loadbalancer_ips() {
-  guest_ssh "$VM_IP_NODE_1" "sudo kubectl get svc -A -o jsonpath='{range .items[?(@.spec.type==\"LoadBalancer\")]}{.metadata.namespace}/{.metadata.name}: {.status.loadBalancer.ingress[0].ip}{\"\\n\"}{end}' 2>/dev/null" 2>/dev/null || true
+  kube_ssh "sudo kubectl get svc -A -o jsonpath='{range .items[?(@.spec.type==\"LoadBalancer\")]}{.metadata.namespace}/{.metadata.name}: {.status.loadBalancer.ingress[0].ip}{\"\\n\"}{end}' 2>/dev/null" 2>/dev/null || true
 }
 
 cluster_summary() {
@@ -927,14 +1015,8 @@ cluster_summary() {
   local traefik_ip
   traefik_ip="$(get_traefik_ip)"
   if [[ -n "$traefik_ip" ]]; then
-    echo -e "   ${CYAN}http://${traefik_ip}${RESET} - Access all your apps here"
-    echo ""
-    echo -e "   ${YELLOW}To use hostnames (recommended):${RESET}"
-    echo -e "   1. Set your DNS or /etc/hosts to point pihole.local to ${traefik_ip}"
-    echo -e "   2. Then access Pi-hole at: ${CYAN}http://pihole.local${RESET}"
-    echo ""
-    echo -e "   ${YELLOW}Or access directly by IP (quick test):${RESET}"
-    echo -e "   ${CYAN}http://${traefik_ip}${RESET} (you may need to add a Host header)"
+    echo -e "   ${CYAN}http://${traefik_ip}${RESET} - Shared ingress IP for hostname-based apps"
+    echo -e "   ${DIM}Apps that want their own IPs will appear below under LoadBalancer Services.${RESET}"
   else
     echo -e "   ${YELLOW}(IP not assigned yet - check 'kubectl -n kube-system get svc traefik')${RESET}"
   fi
@@ -964,7 +1046,7 @@ cluster_summary() {
   echo ""
   echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
   echo ""
-  guest_ssh "$VM_IP_NODE_1" "sudo kubectl get nodes -o wide"
+  kube_ssh "sudo kubectl get nodes -o wide"
 }
 
 run_longhorn_smoke_test() {
@@ -1345,9 +1427,9 @@ run_reverse_flow() {
   echo
 
   # Level 6: Check if Argo CD app is deployed with correct repo
-  if [[ "${OSTRA_FORCE:-}" != "1" ]] && argo_enabled && k3s_server_ready 2>/dev/null && argocd_installed 2>/dev/null; then
+  if [[ "${OSTRA_FORCE:-}" != "1" ]] && argo_enabled && k3s_ha_ready 2>/dev/null && argocd_installed 2>/dev/null; then
     local current_repo
-    current_repo="$(guest_ssh "$VM_IP_NODE_1" "sudo kubectl -n argocd get application ${ARGO_APP_NAME} -o jsonpath='{.spec.source.repoURL}' 2>/dev/null" 2>/dev/null || true)"
+    current_repo="$(kube_ssh "sudo kubectl -n argocd get application ${ARGO_APP_NAME} -o jsonpath='{.spec.source.repoURL}' 2>/dev/null" 2>/dev/null || true)"
     if [[ "$current_repo" == *"${ARGO_GITHUB_REPO}"* ]]; then
       log "Argo CD app '${ARGO_APP_NAME}' already deployed from ${ARGO_GITHUB_REPO}"
       run_longhorn_smoke_test
@@ -1359,7 +1441,7 @@ run_reverse_flow() {
 
   # Level 5: Check Argo CD install
   if [[ "${OSTRA_FORCE:-}" != "1" ]] && argo_enabled; then
-    if k3s_server_ready 2>/dev/null && argocd_installed 2>/dev/null; then
+    if k3s_ha_ready 2>/dev/null && argocd_installed 2>/dev/null; then
       log "Argo CD already installed"
     else
       log "Argo CD needed but cluster not ready, continuing down..."
@@ -1367,21 +1449,21 @@ run_reverse_flow() {
   fi
 
   # Level 4: Check MetalLB
-  if [[ "${OSTRA_FORCE:-}" != "1" ]] && k3s_server_ready 2>/dev/null && metallb_installed 2>/dev/null && [[ -n "$(get_traefik_ip)" ]]; then
+  if [[ "${OSTRA_FORCE:-}" != "1" ]] && k3s_ha_ready 2>/dev/null && metallb_installed 2>/dev/null && [[ -n "$(get_traefik_ip)" ]]; then
     log "MetalLB and ingress controller ready"
   else
     log "MetalLB or ingress not ready, continuing down..."
   fi
 
   # Level 3: Check Longhorn
-  if [[ "${OSTRA_FORCE:-}" != "1" ]] && k3s_server_ready 2>/dev/null && longhorn_installed 2>/dev/null; then
+  if [[ "${OSTRA_FORCE:-}" != "1" ]] && k3s_ha_ready 2>/dev/null && longhorn_installed 2>/dev/null; then
     log "Longhorn already installed"
   else
     log "Longhorn not ready, continuing down..."
   fi
 
   # Level 2: Check K3s cluster
-  if [[ "${OSTRA_FORCE:-}" != "1" ]] && k3s_server_ready 2>/dev/null; then
+  if [[ "${OSTRA_FORCE:-}" != "1" ]] && k3s_ha_ready 2>/dev/null; then
     log "K3s cluster already ready"
   else
     log "K3s cluster not ready, continuing down..."
