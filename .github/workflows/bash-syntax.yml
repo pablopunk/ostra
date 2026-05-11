@@ -1,0 +1,13 @@
+name: Bash syntax
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  bash-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check ostra.sh syntax
+        run: bash -n ostra.sh
