@@ -1081,9 +1081,17 @@ ensure_config_ready() {
       write_config
       log "Saved config to $CONFIG_FILE"
     fi
-    collect_argo_config
-    derive_gateway_if_missing
-    write_config
+    if [[ -z "${ARGO_ENABLED:-}" ]] || [[ -z "${ARGO_GITHUB_REPO:-}" ]]; then
+      collect_argo_config
+      derive_gateway_if_missing
+      write_config
+    elif prompt_yes_no "Argo CD already configured with ${ARGO_GITHUB_REPO}. Keep it?" "y"; then
+      : # keep existing config
+    else
+      collect_argo_config
+      derive_gateway_if_missing
+      write_config
+    fi
   fi
 
   validate_config || die "Config is incomplete. Run: ./ostra.sh config"
