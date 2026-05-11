@@ -23,12 +23,19 @@ Notes:
 EOF
 }
 
+BLUE='\033[0;34m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+RESET='\033[0m'
+
 log() {
-  echo "[$PROJECT_NAME] $*"
+  echo -e "${BLUE}[$PROJECT_NAME]${RESET} $*"
 }
 
 die() {
-  echo "[$PROJECT_NAME] ERROR: $*" >&2
+  echo -e "${RED}[$PROJECT_NAME] ERROR:${RESET} $*" >&2
   exit 1
 }
 
@@ -817,24 +824,33 @@ argocd_admin_password() {
 }
 
 cluster_summary() {
-  cat <<EOF
-OSTRA cluster summary:
-- K3s server: https://${VM_IP_NODE_1}:6443
-- Node 1: ${VM_NAME_NODE_1} (${VM_IP_NODE_1})
-- Node 2: ${VM_NAME_NODE_2} (${VM_IP_NODE_2})
-- Node 3: ${VM_NAME_NODE_3} (${VM_IP_NODE_3})
-- Longhorn UI: http://${VM_IP_NODE_1}:${LONGHORN_UI_NODEPORT}
-EOF
+  echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+  echo -e "${CYAN}        OSTRA Cluster Summary${RESET}"
+  echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+  echo ""
+  echo -e "${YELLOW}🚀 K3s Server${RESET}"
+  echo -e "   ${CYAN}https://${VM_IP_NODE_1}:6443${RESET}"
+  echo ""
+  echo -e "${YELLOW}🖥️  Nodes${RESET}"
+  echo -e "   ${CYAN}Node 1:${RESET} ${VM_NAME_NODE_1} (${VM_IP_NODE_1})"
+  echo -e "   ${CYAN}Node 2:${RESET} ${VM_NAME_NODE_2} (${VM_IP_NODE_2})"
+  echo -e "   ${CYAN}Node 3:${RESET} ${VM_NAME_NODE_3} (${VM_IP_NODE_3})"
+  echo ""
+  echo -e "${YELLOW}💾 Longhorn UI${RESET}"
+  echo -e "   ${CYAN}http://${VM_IP_NODE_1}:${LONGHORN_UI_NODEPORT}${RESET}"
   if argo_enabled; then
-    cat <<EOF
-- Argo CD UI: http://${VM_IP_NODE_1}:${ARGO_UI_NODEPORT}
-- Argo CD user: admin
-- Argo CD pass: $(argocd_admin_password)
-- Argo CD repo: ${ARGO_GITHUB_REPO}
-- Argo CD branch: ${ARGO_GITHUB_BRANCH}
-- Argo CD path: ${ARGO_APP_PATH}
-EOF
+    echo ""
+    echo -e "${YELLOW}⚓ Argo CD${RESET}"
+    echo -e "   ${CYAN}UI:${RESET}      http://${VM_IP_NODE_1}:${ARGO_UI_NODEPORT}"
+    echo -e "   ${CYAN}User:${RESET}    admin"
+    echo -e "   ${CYAN}Pass:${RESET}    $(argocd_admin_password)"
+    echo -e "   ${CYAN}Repo:${RESET}    ${ARGO_GITHUB_REPO}"
+    echo -e "   ${CYAN}Branch:${RESET}  ${ARGO_GITHUB_BRANCH}"
+    echo -e "   ${CYAN}Path:${RESET}    ${ARGO_APP_PATH}"
   fi
+  echo ""
+  echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+  echo ""
   guest_ssh "$VM_IP_NODE_1" "sudo kubectl get nodes -o wide"
 }
 
