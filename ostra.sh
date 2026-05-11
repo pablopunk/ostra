@@ -1134,22 +1134,62 @@ Generated state:
 EOF
 }
 
-run_default_flow() {
+run_reverse_flow() {
   ensure_config_ready "ask"
   write_config
 
   echo
-  log "Configuration saved"
-  echo
-  summarize_config
+  log "Checking cluster state (reverse order)"
   echo
 
+  # Level 5: Check if Argo CD app is deployed with correct repo
+  if argo_enabled && k3s_server_ready 2>/dev/null && argocd_installed 2>/dev/null; then
+    local current_repo
+    current_repo="$(guest_ssh "$VM_IP_NODE_1" "sudo kubectl -n argocd get application ${ARGO_APP_NAME} -o jsonpath='{.spec.source.repoURL}' 2>/dev/null" 2>/dev/null || true)"
+    if [[ "$current_repo" == *"${ARGO_GITHUB_REPO}"* ]]; then
+      log "Argo CD app '${ARGO_APP_NAME}' already deployed from ${ARGO_GITHUB_REPO}"
+      run_longhorn_smoke_test
+      echo
+      cluster_summary
+      return 0
+    fi
+  fi
+
+  # Level 4: Check Argo CD install
+  if argo_enabled; then
+    if k3s_server_ready 2>/dev/null && argocd_installed 2>/dev/null; then
+      log "Argo CD already installed"
+    else
+      log "Argo CD needed but cluster not ready, continuing down..."
+    fi
+  fi
+
+  # Level 3: Check K3s cluster
+  if k3s_server_ready 2>/dev/null; then
+    log "K3s cluster already ready"
+  else
+    log "K3s cluster not ready, continuing down..."
+  fi
+
+  # Level 2: Check guest SSH (VMs exist and booted)
+  if guest_reachable "$VM_IP_NODE_1" 2>/dev/null && \
+     guest_reachable "$VM_IP_NODE_2" 2>/dev/null && \
+     guest_reachable "$VM_IP_NODE_3" 2>/dev/null; then
+    log "All guests reachable via SSH"
+  else
+    log "Guests not all reachable, continuing down..."
+  fi
+
+  # Level 1: Check Proxmox connectivity and infra
   log "Checking Proxmox SSH connectivity"
   ensure_proxmox_connectivity
 
   log "Assigning stable template VMIDs, VM IDs, names, and guest IPs"
   assign_state_defaults
 
+  echo
+  summarize_config
+  echo
   summarize_state
   echo
   summarize_vm_targets
@@ -1205,7 +1245,7 @@ main() {
     esac
   fi
 
-  run_default_flow
+  run_reverse_flow
 }
 
 main "$@"
