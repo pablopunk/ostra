@@ -1125,53 +1125,55 @@ derive_gateway_if_missing() {
   fi
 }
 
+find_suggested_metallb_range() {
+  local gateway="${GATEWAY:-}"
+  [[ -n "$gateway" ]] || return 0
+
+  local subnet start end host ip busy ok
+  subnet="$(same_subnet_prefix_3 "$gateway")"
+
+  for start in 240 230 220 210 200; do
+    end=$((start + 10))
+    ok=1
+    for host in $(seq "$start" "$end"); do
+      ip="${subnet}.${host}"
+      if ping -c 1 -W 1 "$ip" >/dev/null 2>&1 || ip_ssh_responds "$ip"; then
+        ok=0
+        break
+      fi
+    done
+    if (( ok == 1 )); then
+      echo "${subnet}.${start} ${subnet}.${end}"
+      return 0
+    fi
+  done
+
+  echo "${subnet}.240 ${subnet}.250"
+}
+
 show_network_info() {
   local gateway="${GATEWAY:-}"
   [[ -n "$gateway" ]] || return 0
-  
+
+  local subnet suggestion start_ip end_ip
+  subnet="$(same_subnet_prefix_3 "$gateway")"
+  suggestion="$(find_suggested_metallb_range)"
+  start_ip="${suggestion%% *}"
+  end_ip="${suggestion##* }"
+
+  if [[ -z "${METALLB_IP_RANGE_START:-}" ]]; then
+    METALLB_IP_RANGE_START="$start_ip"
+  fi
+  if [[ -z "${METALLB_IP_RANGE_END:-}" ]]; then
+    METALLB_IP_RANGE_END="$end_ip"
+  fi
+
   echo ""
   echo "=== Network Information ==="
   echo "Your gateway/router: $gateway"
-  echo ""
-  echo "Checking for active DHCP leases on your network..."
-  
-  # Try to ping common DHCP range to see what's alive
-  local subnet prefix
-  subnet="$(same_subnet_prefix_3 "$gateway")"
-  echo "Scanning $subnet.1-254 for active hosts (this may take a moment)..."
-  
-  local active_ips=""
-  for i in $(seq 1 254); do
-    if ping -c 1 -W 0.2 "${subnet}.${i}" >/dev/null 2>&1; then
-      active_ips="${active_ips}${subnet}.${i} "
-    fi
-  done &
-  local pid=$!
-  
-  # Show progress
-  echo -n "Scanning"
-  for i in $(seq 1 5); do
-    sleep 0.5
-    echo -n "."
-  done
-  wait $pid 2>/dev/null
-  echo ""
-  
-  if [[ -n "$active_ips" ]]; then
-    echo ""
-    echo "Active IPs found: $active_ips"
-  else
-    echo ""
-    echo "(Scan may still be running in background)"
-  fi
-  
-  echo ""
-  echo "Recommended: Use a range ABOVE .240 to avoid conflicts"
-  echo "Example: 192.168.1.240-192.168.1.250"
-  echo ""
-  echo "To see your router's actual DHCP range, check:"
-  echo "  - Your router admin panel (usually http://$gateway)"
-  echo "  - Or run: nmap -sn ${subnet}.0/24 (if you have nmap)"
+  echo "Suggested MetalLB range: ${METALLB_IP_RANGE_START}-${METALLB_IP_RANGE_END}"
+  echo "(OSTRA checks .240-.250 first, then lower 10-IP blocks if needed)"
+  echo "If your router uses those IPs for DHCP, pick another free range."
 }
 
 validate_config() {
