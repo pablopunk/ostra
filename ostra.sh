@@ -848,16 +848,28 @@ collect_argo_config() {
     fi
   fi
 
-  if prompt_yes_no "Do you want to install Argo CD and connect a GitHub repo?" "y"; then
+  echo
+  echo "Argo CD lets you manage apps through Git. Push changes to"
+  echo "your repo, Argo CD automatically updates the cluster."
+  if prompt_yes_no "Install Argo CD and connect a GitHub repo?" "y"; then
     ARGO_ENABLED="yes"
     write_config
-    prompt_with_default ARGO_GITHUB_REPO "GitHub repo (owner/name or URL)"
+    echo
+    echo "The repo should contain Kubernetes YAML files."
+    prompt_with_default ARGO_GITHUB_REPO "GitHub repo (format: owner/repo)"
     ARGO_GITHUB_REPO="$(normalize_github_repo_url "${ARGO_GITHUB_REPO:-}")"
     write_config
-    prompt_with_default ARGO_GITHUB_BRANCH "GitHub branch"
-    prompt_with_default ARGO_APP_PATH "Repo path to deploy"
-    prompt_with_default ARGO_APP_NAMESPACE "Namespace to deploy into"
-    prompt_with_default ARGO_APP_NAME "Argo CD app name"
+    prompt_with_default ARGO_GITHUB_BRANCH "Branch to watch (usually main)"
+    echo
+    echo "Path to the folder inside your repo that contains"
+    echo "Kubernetes manifests. Use '.' for the root."
+    prompt_with_default ARGO_APP_PATH "Folder path in repo"
+    echo
+    echo "Namespace is like a folder for your app in Kubernetes."
+    echo "Using the app name keeps things organized."
+    prompt_with_default ARGO_APP_NAMESPACE "Namespace (e.g., pihole)"
+    prompt_with_default ARGO_APP_NAME "App name in Argo CD"
+    prompt_with_default ARGO_UI_NODEPORT "Port for Argo CD dashboard"
   else
     ARGO_ENABLED=""
     ARGO_GITHUB_REPO=""
@@ -1107,26 +1119,52 @@ validate_config() {
 }
 
 collect_config_interactively() {
-  prompt_with_default PROXMOX_SSH_USER "Proxmox SSH user"
-  prompt_with_default PROXMOX_NODE_1_NAME "Node 1 name"
-  prompt_with_default PROXMOX_NODE_1_IP "Node 1 IP"
-  prompt_with_default PROXMOX_NODE_2_NAME "Node 2 name"
-  prompt_with_default PROXMOX_NODE_2_IP "Node 2 IP"
-  prompt_with_default PROXMOX_NODE_3_NAME "Node 3 name"
-  prompt_with_default PROXMOX_NODE_3_IP "Node 3 IP"
+  echo
+  echo "=== Proxmox Connection ==="
+  echo "These are your 3 Proxmox nodes that will host the VMs"
+  prompt_with_default PROXMOX_SSH_USER "SSH user for Proxmox (usually root)"
+  prompt_with_default PROXMOX_NODE_1_NAME "Name of your strongest node (e.g., ms01)"
+  prompt_with_default PROXMOX_NODE_1_IP "IP address of node 1"
+  prompt_with_default PROXMOX_NODE_2_NAME "Name of node 2 (e.g., nuke)"
+  prompt_with_default PROXMOX_NODE_2_IP "IP address of node 2"
+  prompt_with_default PROXMOX_NODE_3_NAME "Name of node 3 (e.g., zima)"
+  prompt_with_default PROXMOX_NODE_3_IP "IP address of node 3"
   derive_gateway_if_missing
   write_config
-  prompt_with_default BRIDGE "Bridge"
-  prompt_with_default GATEWAY "Gateway"
-  prompt_with_default CIDR "CIDR"
-  prompt_with_default VM_OS "VM OS"
-  prompt_with_default VM_DISK_GB "VM disk size (GB)"
+  
+  echo
+  echo "=== Network Settings ==="
+  echo "These should match your existing network"
+  prompt_with_default BRIDGE "Network bridge (usually vmbr0)"
+  prompt_with_default GATEWAY "Gateway IP (usually your router)"
+  prompt_with_default CIDR "Network CIDR (usually 24)"
+  
+  echo
+  echo "=== Virtual Machines ==="
+  echo "These VMs will run your Kubernetes cluster"
+  prompt_with_default VM_OS "VM operating system"
+  prompt_with_default VM_DISK_GB "Disk size per VM in GB"
+  
+  echo
+  echo "=== Kubernetes Versions ==="
+  echo "Pinning versions makes the cluster reproducible"
   prompt_with_default K3S_VERSION "K3s version"
-  prompt_with_default LONGHORN_VERSION "Longhorn version"
-  prompt_with_default LONGHORN_UI_NODEPORT "Longhorn UI node port"
+  prompt_with_default LONGHORN_VERSION "Longhorn version (storage system)"
+  prompt_with_default LONGHORN_UI_NODEPORT "Port for Longhorn dashboard"
+  
+  echo
+  echo "=== MetalLB (Virtual IPs for Services) ==="
+  echo "MetalLB gives your apps stable IP addresses that don't"
+  echo "change when pods move between nodes. Pick a range outside"
+  echo "your DHCP pool but in your subnet."
   prompt_with_default METALLB_VERSION "MetalLB version"
-  prompt_with_default METALLB_IP_RANGE_START "MetalLB IP range start (e.g., 192.168.1.240)"
-  prompt_with_default METALLB_IP_RANGE_END "MetalLB IP range end (e.g., 192.168.1.250)"
+  prompt_with_default METALLB_IP_RANGE_START "First IP for virtual addresses (e.g., 192.168.1.240)"
+  prompt_with_default METALLB_IP_RANGE_END "Last IP for virtual addresses (e.g., 192.168.1.250)"
+  
+  echo
+  echo "=== Argo CD (Git-Based Deployment) ==="
+  echo "Argo CD watches your Git repo and automatically deploys"
+  echo "any changes you push. Edit files in Git, they go live."
   prompt_with_default ARGO_VERSION "Argo CD version"
   prompt_with_default ARGO_UI_NODEPORT "Argo CD UI node port"
   prompt_with_default VM_NODE_1_VCPUS "Node 1 VM vCPUs"
