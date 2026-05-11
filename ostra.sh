@@ -788,6 +788,13 @@ ensure_argocd_repo_connected() {
 }
 
 collect_argo_config() {
+  # If already configured, offer to keep or change
+  if [[ -n "${ARGO_ENABLED:-}" ]] && [[ -n "${ARGO_GITHUB_REPO:-}" ]]; then
+    if prompt_yes_no "Argo CD already configured with ${ARGO_GITHUB_REPO}. Keep it?" "y"; then
+      return 0
+    fi
+  fi
+
   if prompt_yes_no "Do you want to install Argo CD and connect a GitHub repo?" "y"; then
     ARGO_ENABLED="yes"
     write_config
@@ -1058,6 +1065,8 @@ collect_config_interactively() {
     STORAGE_ONLY_NODE_INDEX=""
     write_config
   fi
+
+  collect_argo_config
 }
 
 ensure_config_loaded() {
@@ -1080,17 +1089,6 @@ ensure_config_ready() {
       derive_gateway_if_missing
       write_config
       log "Saved config to $CONFIG_FILE"
-    fi
-    if [[ -z "${ARGO_ENABLED:-}" ]] || [[ -z "${ARGO_GITHUB_REPO:-}" ]]; then
-      collect_argo_config
-      derive_gateway_if_missing
-      write_config
-    elif prompt_yes_no "Argo CD already configured with ${ARGO_GITHUB_REPO}. Keep it?" "y"; then
-      : # keep existing config
-    else
-      collect_argo_config
-      derive_gateway_if_missing
-      write_config
     fi
   fi
 
