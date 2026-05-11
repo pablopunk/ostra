@@ -1129,26 +1129,9 @@ find_suggested_metallb_range() {
   local gateway="${GATEWAY:-}"
   [[ -n "$gateway" ]] || return 0
 
-  local subnet start end host ip busy ok
+  local subnet
   subnet="$(same_subnet_prefix_3 "$gateway")"
-
-  for start in 240 230 220 210 200; do
-    end=$((start + 10))
-    ok=1
-    for host in $(seq "$start" "$end"); do
-      ip="${subnet}.${host}"
-      if ping -c 1 -W 1 "$ip" >/dev/null 2>&1 || ip_ssh_responds "$ip"; then
-        ok=0
-        break
-      fi
-    done
-    if (( ok == 1 )); then
-      echo "${subnet}.${start} ${subnet}.${end}"
-      return 0
-    fi
-  done
-
-  echo "${subnet}.240 ${subnet}.250"
+  echo "${subnet}.10 ${subnet}.20"
 }
 
 show_network_info() {
@@ -1175,9 +1158,10 @@ show_network_info() {
   echo "OSTRA suggests these spare LAN IPs for Kubernetes services:"
   echo "  ${METALLB_IP_RANGE_START} - ${METALLB_IP_RANGE_END}"
   echo ""
-  echo "In most home networks, you can just press Enter and keep them."
-  echo "Only change them if you know your router already hands them out."
+  echo "This is just a default guess."
+  echo "Change it only if you know your router already uses those IPs."
 }
+
 
 validate_config() {
   local missing=0
