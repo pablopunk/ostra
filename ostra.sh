@@ -1170,10 +1170,13 @@ show_network_info() {
 
   echo ""
   echo "=== Network Information ==="
-  echo "Your gateway/router: $gateway"
-  echo "Suggested MetalLB range: ${METALLB_IP_RANGE_START}-${METALLB_IP_RANGE_END}"
-  echo "(OSTRA checks .240-.250 first, then lower 10-IP blocks if needed)"
-  echo "If your router uses those IPs for DHCP, pick another free range."
+  echo "Router / gateway: $gateway"
+  echo ""
+  echo "OSTRA suggests these spare LAN IPs for Kubernetes services:"
+  echo "  ${METALLB_IP_RANGE_START} - ${METALLB_IP_RANGE_END}"
+  echo ""
+  echo "In most home networks, you can just press Enter and keep them."
+  echo "Only change them if you know your router already hands them out."
 }
 
 validate_config() {
@@ -1243,17 +1246,15 @@ collect_config_interactively() {
   
   echo
   echo "=== Cluster Access (MetalLB) ==="
-  echo "This creates ONE stable IP for your entire cluster. You'll"
-  echo "access Pi-hole, Grafana, and all future apps through this"
-  echo "single IP using different hostnames (pihole.local, etc)."
+  echo "OSTRA needs a few spare IPs on your home network."
+  echo "Kubernetes will use them for apps like Pi-hole."
   echo ""
-  
+
   show_network_info
-  
-  echo "Enter the IP range for MetalLB to use:"
+
   prompt_with_default METALLB_VERSION "MetalLB version"
-  prompt_with_default METALLB_IP_RANGE_START "First IP for cluster (e.g., 192.168.1.240)"
-  prompt_with_default METALLB_IP_RANGE_END "Last IP for cluster (e.g., 192.168.1.250)"
+  prompt_with_default METALLB_IP_RANGE_START "First spare LAN IP for Kubernetes services"
+  prompt_with_default METALLB_IP_RANGE_END "Last spare LAN IP for Kubernetes services"
   
   echo
   echo "=== Argo CD (Git-Based Deployment) ==="
