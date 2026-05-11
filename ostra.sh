@@ -681,6 +681,28 @@ wait_for_metallb() {
   guest_ssh "$VM_IP_NODE_1" "sudo kubectl -n metallb-system rollout status deploy/controller --timeout=300s >/dev/null && sudo kubectl -n metallb-system rollout status ds/speaker --timeout=300s >/dev/null"
 }
 
+ensure_traefik_loadbalancer() {
+  log "Exposing Traefik ingress controller on LoadBalancer IP"
+  guest_ssh "$VM_IP_NODE_1" "sudo kubectl patch svc traefik -n kube-system --type merge -p '{\"spec\":{\"type\":\"LoadBalancer\"}}' >/dev/null 2>&1 || true"
+  # Wait for Traefik to get an external IP
+  local attempts=0
+  while [[ $attempts -lt 30 ]]; do
+    local ip
+    ip="$(guest_ssh "$VM_IP_NODE_1" "sudo kubectl -n kube-system get svc traefik -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null" 2>/dev/null || true)"
+    if [[ -n "$ip" ]]; then
+      log "Traefik ingress available at: http://${ip}"
+      return 0
+    fi
+    sleep 2
+    attempts=$((attempts + 1))
+  done
+  log "Warning: Traefik IP not assigned yet (MetalLB may still be configuring)"
+}
+
+get_traefik_ip() {
+  guest_ssh "$VM_IP_NODE_1" "sudo kubectl -n kube-system get svc traefik -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null" 2>/dev/null || echo ""
+}
+
 ensure_metallb() {
   if metallb_installed; then
     log "MetalLB already installed"
@@ -897,6 +919,16 @@ cluster_summary() {
   echo -e "   ${CYAN}Node 1:${RESET} ${VM_NAME_NODE_1} (${VM_IP_NODE_1})"
   echo -e "   ${CYAN}Node 2:${RESET} ${VM_NAME_NODE_2} (${VM_IP_NODE_2})"
   echo -e "   ${CYAN}Node 3:${RESET} ${VM_NAME_NODE_3} (${VM_IP_NODE_3})"
+  echo ""
+  echo -e "${YELLOW}🌐 Cluster Ingress (single IP for all apps)${RESET}"
+  local traefik_ip
+  traefik_ip="$(get_traefik_ip)"
+  if [[ -n "$traefik_ip" ]]; then
+    echo -e "   ${CYAN}http://${traefik_ip}${RESET} - Access all your apps here"
+    echo -e "   ${CYAN}(Use hostnames like pihole.local pointing to this IP)${RESET}"
+  else
+    echo -e "   ${YELLOW}(IP not assigned yet - check 'kubectl -n kube-system get svc traefik')${RESET}"
+  fi
   echo ""
   echo -e "${YELLOW}💾 Longhorn UI${RESET}"
   echo -e "   ${CYAN}http://${VM_IP_NODE_1}:${LONGHORN_UI_NODEPORT}${RESET}"
@@ -1153,13 +1185,16 @@ collect_config_interactively() {
   prompt_with_default LONGHORN_UI_NODEPORT "Port for Longhorn dashboard"
   
   echo
-  echo "=== MetalLB (Virtual IPs for Services) ==="
-  echo "MetalLB gives your apps stable IP addresses that don't"
-  echo "change when pods move between nodes. Pick a range outside"
-  echo "your DHCP pool but in your subnet."
+  echo "=== Cluster Access (MetalLB) ==="
+  echo "This creates ONE stable IP for your entire cluster. You'll"
+  echo "access Pi-hole, Grafana, and all future apps through this"
+  echo "single IP using different hostnames (pihole.local, etc)."
+  echo ""
+  echo "Pick a small IP range OUTSIDE your router's DHCP pool."
+  echo "Example: if DHCP gives .100-.200, use .240-.250"
   prompt_with_default METALLB_VERSION "MetalLB version"
-  prompt_with_default METALLB_IP_RANGE_START "First IP for virtual addresses (e.g., 192.168.1.240)"
-  prompt_with_default METALLB_IP_RANGE_END "Last IP for virtual addresses (e.g., 192.168.1.250)"
+  prompt_with_default METALLB_IP_RANGE_START "First IP for cluster (e.g., 192.168.1.240)"
+  prompt_with_default METALLB_IP_RANGE_END "Last IP for cluster (e.g., 192.168.1.250)"
   
   echo
   echo "=== Argo CD (Git-Based Deployment) ==="
@@ -1294,10 +1329,10 @@ run_reverse_flow() {
   fi
 
   # Level 4: Check MetalLB
-  if [[ "${OSTRA_FORCE:-}" != "1" ]] && k3s_server_ready 2>/dev/null && metallb_installed 2>/dev/null; then
-    log "MetalLB already installed"
+  if [[ "${OSTRA_FORCE:-}" != "1" ]] && k3s_server_ready 2>/dev/null && metallb_installed 2>/dev/null && [[ -n "$(get_traefik_ip)" ]]; then
+    log "MetalLB and ingress controller ready"
   else
-    log "MetalLB not ready, continuing down..."
+    log "MetalLB or ingress not ready, continuing down..."
   fi
 
   # Level 3: Check Longhorn
@@ -1360,6 +1395,10 @@ run_reverse_flow() {
 
   log "Ensuring MetalLB is installed"
   ensure_metallb
+  echo
+
+  log "Exposing ingress controller for single-cluster IP access"
+  ensure_traefik_loadbalancer
   echo
 
   log "Ensuring Longhorn is installed"
