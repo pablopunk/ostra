@@ -28,6 +28,9 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+BOLD='\033[1m'
+DIM='\033[2m'
 RESET='\033[0m'
 
 log() {
@@ -1063,6 +1066,12 @@ ensure_all_vms() {
   ensure_vm_on_node 3
 }
 
+prompt_section() {
+  echo
+  echo -e "${MAGENTA}${BOLD}$1${RESET}"
+  [[ -n "${2:-}" ]] && echo -e "${DIM}$2${RESET}"
+}
+
 prompt_with_default() {
   local var_name="$1"
   local prompt_text="$2"
@@ -1074,10 +1083,10 @@ prompt_with_default() {
   fi
 
   if [[ -n "$current_value" ]]; then
-    read -r -p "$prompt_text [$current_value]: " input </dev/tty || true
+    read -r -p "$(echo -e "${CYAN}?${RESET} ${BOLD}${prompt_text}${RESET} ${DIM}[${current_value}]${RESET}: ")" input </dev/tty || true
     printf -v "$var_name" '%s' "${input:-$current_value}"
   else
-    read -r -p "$prompt_text: " input </dev/tty || true
+    read -r -p "$(echo -e "${CYAN}?${RESET} ${BOLD}${prompt_text}${RESET}: ")" input </dev/tty || true
     printf -v "$var_name" '%s' "$input"
   fi
 
@@ -1095,10 +1104,10 @@ prompt_yes_no() {
   fi
 
   if [[ "$default_answer" == "y" ]]; then
-    read -r -p "$prompt_text [Y/n]: " input </dev/tty || true
+    read -r -p "$(echo -e "${YELLOW}?${RESET} ${BOLD}${prompt_text}${RESET} ${DIM}[Y/n]${RESET}: ")" input </dev/tty || true
     [[ -z "$input" || "$input" =~ ^[Yy]$ ]]
   else
-    read -r -p "$prompt_text [y/N]: " input </dev/tty || true
+    read -r -p "$(echo -e "${YELLOW}?${RESET} ${BOLD}${prompt_text}${RESET} ${DIM}[y/N]${RESET}: ")" input </dev/tty || true
     [[ "$input" =~ ^[Yy]$ ]]
   fi
 }
@@ -1195,9 +1204,7 @@ validate_config() {
 }
 
 collect_config_interactively() {
-  echo
-  echo "=== Proxmox Connection ==="
-  echo "These are your 3 Proxmox nodes that will host the VMs"
+  prompt_section "=== Proxmox Connection ===" "These are your 3 Proxmox nodes that will host the VMs"
   prompt_with_default PROXMOX_SSH_USER "SSH user for Proxmox (usually root)"
   prompt_with_default PROXMOX_NODE_1_NAME "Name of your strongest node (e.g., node1)"
   prompt_with_default PROXMOX_NODE_1_IP "IP address of node 1"
@@ -1208,31 +1215,21 @@ collect_config_interactively() {
   derive_gateway_if_missing
   write_config
   
-  echo
-  echo "=== Network Settings ==="
-  echo "These should match your existing network"
+  prompt_section "=== Network Settings ===" "These should match your existing network"
   prompt_with_default BRIDGE "Network bridge (usually vmbr0)"
   prompt_with_default GATEWAY "Gateway IP (usually your router)"
   prompt_with_default CIDR "Network CIDR (usually 24)"
   
-  echo
-  echo "=== Virtual Machines ==="
-  echo "These VMs will run your Kubernetes cluster"
+  prompt_section "=== Virtual Machines ===" "These VMs will run your Kubernetes cluster"
   prompt_with_default VM_OS "VM operating system"
   prompt_with_default VM_DISK_GB "Disk size per VM in GB"
   
-  echo
-  echo "=== Kubernetes Versions ==="
-  echo "Pinning versions makes the cluster reproducible"
+  prompt_section "=== Kubernetes Versions ===" "Pinning versions makes the cluster reproducible"
   prompt_with_default K3S_VERSION "K3s version"
   prompt_with_default LONGHORN_VERSION "Longhorn version (storage system)"
   prompt_with_default LONGHORN_UI_NODEPORT "Port for Longhorn dashboard"
   
-  echo
-  echo "=== Cluster Access (MetalLB) ==="
-  echo "OSTRA needs a few spare IPs on your home network."
-  echo "Kubernetes will use them for apps like Pi-hole."
-  echo ""
+  prompt_section "=== Cluster Access (MetalLB) ===" "OSTRA needs a few spare IPs on your home network. Kubernetes will use them for apps like Pi-hole."
 
   show_network_info
 
@@ -1240,10 +1237,7 @@ collect_config_interactively() {
   prompt_with_default METALLB_IP_RANGE_START "First spare LAN IP for Kubernetes services"
   prompt_with_default METALLB_IP_RANGE_END "Last spare LAN IP for Kubernetes services"
   
-  echo
-  echo "=== Argo CD (Git-Based Deployment) ==="
-  echo "Argo CD watches your Git repo and automatically deploys"
-  echo "any changes you push. Edit files in Git, they go live."
+  prompt_section "=== Argo CD (Git-Based Deployment) ===" "Argo CD watches your Git repo and automatically deploys any changes you push. Edit files in Git, they go live."
   prompt_with_default ARGO_VERSION "Argo CD version"
   prompt_with_default ARGO_UI_NODEPORT "Argo CD UI node port"
   prompt_with_default VM_NODE_1_VCPUS "Node 1 VM vCPUs"
