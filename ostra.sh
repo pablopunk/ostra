@@ -1123,11 +1123,11 @@ collect_config_interactively() {
   echo "=== Proxmox Connection ==="
   echo "These are your 3 Proxmox nodes that will host the VMs"
   prompt_with_default PROXMOX_SSH_USER "SSH user for Proxmox (usually root)"
-  prompt_with_default PROXMOX_NODE_1_NAME "Name of your strongest node (e.g., ms01)"
+  prompt_with_default PROXMOX_NODE_1_NAME "Name of your strongest node (e.g., node1)"
   prompt_with_default PROXMOX_NODE_1_IP "IP address of node 1"
-  prompt_with_default PROXMOX_NODE_2_NAME "Name of node 2 (e.g., nuke)"
+  prompt_with_default PROXMOX_NODE_2_NAME "Name of node 2 (e.g., node2)"
   prompt_with_default PROXMOX_NODE_2_IP "IP address of node 2"
-  prompt_with_default PROXMOX_NODE_3_NAME "Name of node 3 (e.g., zima)"
+  prompt_with_default PROXMOX_NODE_3_NAME "Name of node 3 (e.g., node3)"
   prompt_with_default PROXMOX_NODE_3_IP "IP address of node 3"
   derive_gateway_if_missing
   write_config
