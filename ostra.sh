@@ -805,6 +805,10 @@ collect_argo_config() {
   fi
 }
 
+argocd_admin_password() {
+  guest_ssh "$VM_IP_NODE_1" "sudo kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' 2>/dev/null | base64 -d" 2>/dev/null || echo "(not available yet)"
+}
+
 cluster_summary() {
   cat <<EOF
 OSTRA cluster summary:
@@ -817,6 +821,8 @@ EOF
   if argo_enabled; then
     cat <<EOF
 - Argo CD UI: http://${VM_IP_NODE_1}:${ARGO_UI_NODEPORT}
+- Argo CD user: admin
+- Argo CD pass: $(argocd_admin_password)
 - Argo CD repo: ${ARGO_GITHUB_REPO}
 - Argo CD branch: ${ARGO_GITHUB_BRANCH}
 - Argo CD path: ${ARGO_APP_PATH}
